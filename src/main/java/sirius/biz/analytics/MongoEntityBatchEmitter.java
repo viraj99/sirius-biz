@@ -6,16 +6,20 @@
  * http://www.scireum.de - info@scireum.de
  */
 
-package sirius.biz.analytics.scheduler;
+package sirius.biz.analytics;
 
 import com.alibaba.fastjson.JSONObject;
+import sirius.db.mixing.Mixing;
 import sirius.db.mongo.Mango;
 import sirius.db.mongo.MongoEntity;
+import sirius.db.mongo.MongoQuery;
 import sirius.db.mongo.QueryBuilder;
 import sirius.kernel.async.TaskContext;
 import sirius.kernel.commons.ValueHolder;
 import sirius.kernel.di.std.Part;
+import sirius.kernel.di.std.Register;
 
+import javax.annotation.Nullable;
 import java.util.function.Consumer;
 
 /**
@@ -24,53 +28,41 @@ import java.util.function.Consumer;
  * This is done by creating batches with a specified <tt>startId</tt> and <tt>endId</tt>.
  * <p>
  * Use {@code @Register(classes =  AnalyticsScheduler.class)} to make this scheduler visible to the framework.
- *
- * @param <E> the type of entities being scheduled
  */
-public abstract class MongoEntityBatchScheduler<E extends MongoEntity> implements AnalyticsScheduler<E> {
+@Register(classes = MongoEntityBatchEmitter.class)
+public class MongoEntityBatchEmitter {
 
+    private static final String TYPE = "type";
     private static final String START_ID = "startId";
     private static final String END_ID = "endId";
 
     @Part
     protected Mango mango;
 
-    /**
-     * Returns the class of entities being scheduled by this scheduler.
-     *
-     * @return the type of entities being handled by this scheduler
-     */
-    protected abstract Class<E> getEntityType();
+    @Part
+    protected Mixing mixing;
 
-    /**
-     * Determines the size of the batches being generated.
-     * <p>
-     * Note that the default value is 250 which might be a good guess for most entities. However, this should
-     * be verified and measured in production use.
-     * </p>
-     *
-     * @return the batch size being generated
-     */
-    protected int getBatchSize() {
-        return 250;
-    }
-
-    @Override
-    public void scheduleBatches(Consumer<JSONObject> batchConsumer) {
+    public <E extends MongoEntity> void computeBatches(Class<E> type,
+                                                        @Nullable Consumer<MongoQuery<E>> queryExtender,
+                                                        int batchSize,
+                                                        Consumer<JSONObject> batchConsumer) {
         TaskContext taskContext = TaskContext.get();
         ValueHolder<String> lastLimit = ValueHolder.of("");
         while (taskContext.isActive()) {
             ValueHolder<String> nextLimit = ValueHolder.of(lastLimit.get());
-            mango.select(getEntityType())
-                 .fields(MongoEntity.ID)
-                 .where(QueryBuilder.FILTERS.gt(MongoEntity.ID, lastLimit.get()))
-                 .orderAsc(MongoEntity.ID)
-                 .limit(getBatchSize())
-                 .iterateAll(e -> {
-                     nextLimit.set(e.getId());
-                 });
+            MongoQuery<E> query = mango.select(type)
+                                       .fields(MongoEntity.ID)
+                                       .where(QueryBuilder.FILTERS.gt(MongoEntity.ID, lastLimit.get()));
+            if (queryExtender != null) {
+                queryExtender.accept(query);
+            }
+
+            query.orderAsc(MongoEntity.ID).limit(batchSize).iterateAll(e -> {
+                nextLimit.set(e.getId());
+            });
 
             JSONObject batch = new JSONObject();
+            batch.put(TYPE, Mixing.getNameForType(type));
             batch.put(START_ID, lastLimit.get());
             batch.put(END_ID, nextLimit.get());
             batchConsumer.accept(batch);
@@ -83,14 +75,16 @@ public abstract class MongoEntityBatchScheduler<E extends MongoEntity> implement
         }
     }
 
-    @Override
-    public void collectBatch(JSONObject batchDescription, Consumer<E> entityConsumer) {
+    @SuppressWarnings("unchecked")
+    public <E extends MongoEntity> void evaluateBatch(JSONObject batchDescription, Consumer<E> entityConsumer) {
         long startId = batchDescription.getLongValue(START_ID);
         long endId = batchDescription.getLongValue(END_ID);
+        String typeName = batchDescription.getString(TYPE);
 
-        mango.select(getEntityType())
+        Class<? extends MongoEntity> type = (Class<? extends MongoEntity>) mixing.getDescriptor(typeName).getType();
+        mango.select(type)
              .where(QueryBuilder.FILTERS.gte(MongoEntity.ID, startId))
              .where(QueryBuilder.FILTERS.lte(MongoEntity.ID, endId))
-             .iterateAll(entityConsumer);
+             .iterateAll(e -> entityConsumer.accept((E) e));
     }
 }

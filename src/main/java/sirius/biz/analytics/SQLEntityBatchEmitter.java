@@ -6,15 +6,19 @@
  * http://www.scireum.de - info@scireum.de
  */
 
-package sirius.biz.analytics.scheduler;
+package sirius.biz.analytics;
 
 import com.alibaba.fastjson.JSONObject;
 import sirius.db.jdbc.OMA;
 import sirius.db.jdbc.SQLEntity;
+import sirius.db.jdbc.SmartQuery;
+import sirius.db.mixing.Mixing;
 import sirius.kernel.async.TaskContext;
 import sirius.kernel.commons.ValueHolder;
 import sirius.kernel.di.std.Part;
+import sirius.kernel.di.std.Register;
 
+import javax.annotation.Nullable;
 import java.util.function.Consumer;
 
 /**
@@ -23,51 +27,38 @@ import java.util.function.Consumer;
  * This is done by creating batches with a specified <tt>startId</tt> and <tt>endId</tt>.
  * <p>
  * Use {@code @Register(classes =  AnalyticsScheduler.class)} to make this scheduler visible to the framework.
- *
- * @param <E> the type of entities being scheduled
  */
-public abstract class SQLEntityBatchScheduler<E extends SQLEntity> implements AnalyticsScheduler<E> {
+@Register(classes = SQLEntityBatchEmitter.class)
+public class SQLEntityBatchEmitter {
 
+    private static final String TYPE = "type";
     private static final String START_ID = "startId";
     private static final String END_ID = "endId";
 
     @Part
     protected OMA oma;
 
-    /**
-     * Returns the class of entities being scheduled by this scheduler.
-     *
-     * @return the type of entities being handled by this scheduler
-     */
-    protected abstract Class<E> getEntityType();
+    @Part
+    protected Mixing mixing;
 
-    /**
-     * Determines the size of the batches being generated.
-     * <p>
-     * Note that the default value is 250 which might be a good guess for most entities. However, this should
-     * be verified and measured in production use.
-     * </p>
-     *
-     * @return the batch size being generated
-     */
-    protected int getBatchSize() {
-        return 250;
-    }
-
-    @Override
-    public void scheduleBatches(Consumer<JSONObject> batchConsumer) {
+    public <E extends SQLEntity> void computeBatches(Class<E> type,
+                                                     @Nullable Consumer<SmartQuery<E>> queryExtender,
+                                                     int batchSize,
+                                                     Consumer<JSONObject> batchConsumer) {
         TaskContext taskContext = TaskContext.get();
         ValueHolder<Long> lastLimit = ValueHolder.of(0L);
         while (taskContext.isActive()) {
             ValueHolder<Long> nextLimit = ValueHolder.of(lastLimit.get());
-            oma.selectFromSecondary(getEntityType())
-               .fields(SQLEntity.ID)
-               .where(OMA.FILTERS.gt(SQLEntity.ID, lastLimit.get()))
-               .orderAsc(SQLEntity.ID)
-               .limit(getBatchSize())
-               .iterateAll(e -> {
-                   nextLimit.set(e.getId());
-               });
+            SmartQuery<E> query = oma.selectFromSecondary(type)
+                                     .fields(SQLEntity.ID)
+                                     .where(OMA.FILTERS.gt(SQLEntity.ID, lastLimit.get()));
+            if (queryExtender != null) {
+                queryExtender.accept(query);
+            }
+
+            query.orderAsc(SQLEntity.ID).limit(batchSize).iterateAll(e -> {
+                nextLimit.set(e.getId());
+            });
 
             JSONObject batch = new JSONObject();
             batch.put(START_ID, lastLimit.get());
@@ -82,14 +73,16 @@ public abstract class SQLEntityBatchScheduler<E extends SQLEntity> implements An
         }
     }
 
-    @Override
-    public void collectBatch(JSONObject batchDescription, Consumer<E> entityConsumer) {
+    @SuppressWarnings("unchecked")
+    public <E extends SQLEntity> void evaluateBatch(JSONObject batchDescription, Consumer<E> entityConsumer) {
         long startId = batchDescription.getLongValue(START_ID);
         long endId = batchDescription.getLongValue(END_ID);
+        String typeName = batchDescription.getString(TYPE);
 
-        oma.selectFromSecondary(getEntityType())
+        Class<? extends SQLEntity> type = (Class<? extends SQLEntity>) mixing.getDescriptor(typeName).getType();
+        oma.selectFromSecondary(type)
            .where(OMA.FILTERS.gte(SQLEntity.ID, startId))
            .where(OMA.FILTERS.lte(SQLEntity.ID, endId))
-           .iterateAll(entityConsumer);
+           .iterateAll(e -> entityConsumer.accept((E) e));
     }
 }

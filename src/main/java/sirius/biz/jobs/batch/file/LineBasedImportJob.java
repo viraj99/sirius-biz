@@ -17,6 +17,7 @@ import sirius.db.mixing.BaseEntity;
 import sirius.db.mixing.EntityDescriptor;
 import sirius.db.mixing.Mixing;
 import sirius.kernel.commons.Context;
+import sirius.kernel.commons.Limit;
 import sirius.kernel.commons.Values;
 import sirius.kernel.commons.Watch;
 import sirius.kernel.di.std.Part;
@@ -72,6 +73,9 @@ public class LineBasedImportJob<E extends BaseEntity<?>> extends FileImportJob i
             Watch w = Watch.start();
             try {
                 Context ctx = aliases.transform(row);
+//                if (removeEmptyFields) {
+//                    ctx.removeEmpty();
+//                }
                 handleRow(index, ctx);
             } catch (Exception e) {
                 process.handle(e);

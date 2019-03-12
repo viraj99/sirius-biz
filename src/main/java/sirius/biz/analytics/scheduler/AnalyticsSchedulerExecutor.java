@@ -22,10 +22,10 @@ import java.util.function.Consumer;
  * Provides a base implementation for executing an {@link AnalyticsScheduler}.
  * <p>
  * This reads the scheduler name and date from each given task description and instructs the appropriate scheduler via
- * {@link AnalyticsScheduler#scheduleBatches(Consumer)} to compute all batches to be executed. The emitted
- * are then submitted via {@link DistributedTasks} to be executed by an {@link AnalyticalTaskExecutor}.
+ * {@link AnalyticsScheduler#scheduleBatches(Consumer)} to compute all batches to be executed. The emitted batches
+ * are then submitted via {@link DistributedTasks} to be executed by the appropriate {@link AnalyticsBatchExecutor}.
  */
-abstract class AnalyticsSchedulerExecutor extends DistributedTaskExecutor {
+public abstract class AnalyticsSchedulerExecutor extends DistributedTaskExecutor {
 
     @Part
     protected GlobalContext ctx;
@@ -37,13 +37,13 @@ abstract class AnalyticsSchedulerExecutor extends DistributedTaskExecutor {
     public void executeWork(JSONObject context) throws Exception {
         String schedulerName = context.getString(AnalyticalEngine.CONTEXT_SCHEDULER_NAME);
         LocalDate date = Value.of(context.get(AnalyticalEngine.CONTEXT_DATE)).asLocalDate(LocalDate.now());
-        AnalyticsScheduler<?> scheduler = ctx.findPart(schedulerName, AnalyticsScheduler.class);
+        AnalyticsScheduler scheduler = ctx.findPart(schedulerName, AnalyticsScheduler.class);
         scheduler.scheduleBatches(batch -> scheduleBatch(scheduler, date, batch));
     }
 
-    protected void scheduleBatch(AnalyticsScheduler<?> scheduler, LocalDate date, JSONObject batch) {
+    protected void scheduleBatch(AnalyticsScheduler scheduler, LocalDate date, JSONObject batch) {
         batch.put(AnalyticalEngine.CONTEXT_SCHEDULER_NAME, scheduler.getName());
         batch.put(AnalyticalEngine.CONTEXT_DATE, date);
-        cluster.submitFIFOTask(null, batch);
+        cluster.submitFIFOTask(scheduler.getExecutorForTasks(), batch);
     }
 }
